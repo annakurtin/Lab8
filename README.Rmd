@@ -15,35 +15,46 @@ options(repos = r)
 
 I use the development version of `glmmTMB` and `broom.mixed` just because Ben Bolker is always updating stuff.
 ```{r eval=F, include=F}
+# how to install packages in development 
 install.packages("devtools")
 library(devtools)
 devtools::install_github("glmmTMB/glmmTMB/glmmTMB")
+# download broom for using with the mixed effects model 
 devtools::install_github("bbolker/broom.mixed", type ="source")
+# source indicates whether the packages are compiled 
 install.packages("broom.mixed")
 ```
 
+*The model comparison methods we learned in Lab6 don't work with mixed effects models*
+
+*no way to dredge a mixed effects model? maybe there is*
+
 The `bbmle` package is great for the `AICtab` and `BICtab` functions to compare model parsimony. `sjPlot` is great for quick plots of coefficients.
 ```{r packages}
-
-ipak <- function(pkg){
-  new.pkg <- pkg[!(pkg %in% installed.packages()[, "Package"])]
-  if (length(new.pkg)) 
-    install.packages(new.pkg, dependencies = TRUE)
-  sapply(pkg, require, character.only = TRUE)
-}
-
 #load or install these packages:
 packages <- c("glmmTMB", "tidyverse", "broom.mixed", "bbmle", "sjPlot", "GGally", "lme4")
-#run function to install packages
-ipak(packages)
+
+package.check <- lapply(
+  packages,
+  FUN = function(x) {
+    if (!require(x, character.only = TRUE)) {
+      install.packages(x, dependencies = TRUE)
+      library(x, character.only = TRUE)
+    }
+  }
+)
+
+
 ```
 
 First I just need to load and prepare the`elk2` data frame that we used in LAb 7 to fit the models below.
 ```{r load_prepare_data}
 elk <- read.table("Data/lab7_elk_migrant.csv", header=TRUE, sep=",", na.strings="NA", dec=".", strip.white=TRUE)
 elk$elkuidF <- as.factor(elk$elkuid)
+# make sure there are no NAs in the columns of interest
 elk2 <- elk[complete.cases(elk[30:31]), ]
 elk2$ctotrisk[elk2$ctotrisk>1]=1
+# rescale
 elk2$totalherb_sc <- as.numeric(scale(elk2$totalherb))
 elk2$ctotrisk_sc <- as.numeric(scale(elk2$ctotrisk))
 elk2$ctotrisk2_sc <- as.numeric(scale(elk2$ctotrisk2))
@@ -58,6 +69,7 @@ elk2$risk2_sc <- as.numeric(scale(elk2$risk2))
 
 Now we will refit the same model wtih scaled coefficients, that makes comparing the coefficients easier, though we note that the Z-values and P-values remain nearly identical. 
 ```{r}
+# our naive model with no random effects
 forrisk_sc = glm(used~totalherb_sc+ctotrisk_sc+ctotrisk_sc*totalherb_sc, data=elk2,family=binomial(link="logit"))
 summary(forrisk_sc)
 ggcoef(forrisk_sc, exclude_intercept = TRUE)
@@ -68,19 +80,25 @@ elk2$naive.pred <-predict(forrisk_sc, type = "response")
 
 Based on our Lab 7 two-step models, we saw that there was a lot more variation in the response of elk to total predation risk.  So, here we will fit random coefficients to wolf predation risk. 
 ```{r}
+# use glmer with random intercept for elk id and a random coefficient for individual elk's response to predation risk 
 fr.rc = glmer(used~totalherb_sc+ctotrisk_sc+totalherb_sc*ctotrisk_sc+(ctotrisk_sc|elkuid), data=elk2,family=binomial(link="logit"), verbose=FALSE)
 summary(fr.rc)
+# differences between naive logit and random effects is that the mixed effects model assumes a normal distribution in the response to the random effects
+# we see that there is double the variation between elk than there is at the population of elk
+# since they're scaled, we can compare them directly 
 
 fixef(fr.rc) # This is the fixed effects coefficients
 ranef(fr.rc) # These are the random effects, which in this model is just (1|elkuid), so, one coefficient for each individual elk
+coef(fr.rc) # fixed effects and random effects coefficients for each intercept (each individual elk)
 elk2$fr.rc.pred <- predict(fr.rc, type = "response")
 hist(elk2$fr.rc.pred)
 ```
-Note that this is the histogram of predictions to both the 0's and 1's in the dataset, not just the 0's as Avgar et al. (2017) advocate to be able to intepret the probabiltiy of use, not just seleciton, given the distribution of available covariates in a study area (see lab presentaiton, and forthcoming R code example).
+Note that this is the histogram of predictions to both the 0's and 1's in the dataset, not just the 0's as Avgar et al. (2017) advocate to be able to interpret the probability of use, not just selection, given the distribution of available covariates in a study area (see lab presentation, and forthcoming R code example).
 
 Next, we do the basic predictions which are the fixed-effects unconditional on the random effects (i.e., Naive logit)
 ```{r}
 elk2$fr.rc.pred2 <- predict(fr.rc, re.form = NA, type = "response")
+# same as line 93 above - default argument for re.form is NA
 summary(elk2$fr.rc.pred2)
 ```
 But note now we can make predictions for JUST individual elk ignoring the variation between individuals in predation risk responses
@@ -105,7 +123,7 @@ Thus, the first thing we need to do is add a column for weights. This is from Fi
 elk2 <-
   elk2 %>% 
   as_tibble() %>% 
-  mutate(w=if_else(used==0, 5000,1),
+  mutate(w=if_else(used==0, 5000,1), # if the used is 0 we make a weight of 5000, lets you play around with if your conclusions are sensitive to your weighting
          elkuid = as.factor(elkuid),
          used = as.factor(used),
          log_risk = log(ctotrisk),
@@ -113,7 +131,8 @@ elk2 <-
   rename(totalherb2_sc = for2_sc)
 ```
 
-Learn about glmmTMB here
+Learn about glmmTMB (generalized linear mixed model template model builder) here
+The most customizeable way to build glms
 ?glmmTMB
 
 and here:
@@ -125,19 +144,21 @@ Now here is the actual `glmmTMB` model. This first one is a mixed effects model 
 
 The 'start' argument tells glmmTMB to fix the variance of the first random effect (intercept) at a high value, such as `log(1e3)`; All the subsequent values (any random slopes) others get a value of 0.
 
-So, if you always specify your random intercept(s) **first**, then it's easy to make sure that you don't accidentally fix the variance of a random slope. If you do screw it up, you will see it in the summary output. Always check the summary to make sure the variance of the random intercept(s) is 1,000,000. This model took ~ 30 seconds to run on my CPU. `glmmTMB` is fast.
+So, if you always specify your random intercept(s) **first**, then it's easy to make sure that you don't accidentally fix the variance of a random slope. If you do screw it up, you will see it in the summary output. Always check the summary to make sure the variance of the random intercept(s) is 1,000,000 (has blown up to be infinite). This model took ~ 30 seconds to run on my CPU. `glmmTMB` is fast.
 
 ## Random intercept only
 ```{r intercept_only_model}
 system.time(
-  forage_risk_r_int <- glmmTMB(used ~ totalherb_sc + totalherb2_sc + log_risk_sc + 
-                               (1|elkuid),
+  forage_risk_r_int <- glmmTMB(used ~ totalherb_sc + totalherb2_sc + log_risk_sc + # use log predation risk since it is very non normally distributed
+                                 # herb plus herb squared is intermediate forage biomass
+                               (1|elkuid), # inclulde a random intercept
                              weights = w, data=elk2, family=binomial,
-                             map=list(theta=factor(NA)),
+                             map=list(theta=factor(NA)), # theta is variance component of random effects, we're making it not a factor and giving it a starting value of a really small value
                              start=list(theta=log(1e3)))
 )
 
 summary(forage_risk_r_int)
+# estimate for totalherb2_sc: negative quadratic, meaning that they like increasing levels of forage biomass up until a certian point when it declines
 ```
 
 If you're curious about how different a model is without fixing the random intercept variance at a high value, you can run that model and compare the coefficients to the model above.
@@ -160,13 +181,14 @@ This next model has a random intercept and a random slope for `log_risk_sc` at t
 ```{r random_slope_risk_model}
 system.time(
   forage_risk_slope_risk <- glmmTMB(used ~ totalherb_sc + totalherb2_sc + log_risk_sc + 
-                                    (1|elkuid) + (0 + log_risk_sc|elkuid), 
+                                    (1|elkuid) + (0 + log_risk_sc|elkuid), # say that the random intercept is independent from the coefficient for slope of risk by elk id
                                   data=elk2, family=binomial, weights = w, 
-                                  map=list(theta=factor(c(NA, 1))),
-                                  start=list(theta=c(log(1e3), 0)))
+                                  map=list(theta=factor(c(NA, 1))), # NA for random effects variance, 1 for random effect of predation
+                                  start=list(theta=c(log(1e3), 0))) # small starting theta, no starting value
 )
 
-summary(forage_risk_slope_risk)
+summary(forage_risk_slope_risk) # the predation coefficient is no longer significant
+# tells you that some elk respond strongly to predation risk 
 plot_model(forage_risk_slope_risk, transform=NULL)
 ```
 
@@ -178,12 +200,13 @@ system.time(forage_risk_slopes_both <- glmmTMB(used ~ totalherb_sc + totalherb2_
                                      (1|elkuid) + (0 + totalherb_sc|elkuid) + (0 + totalherb2_sc|elkuid) + 
                                      (0 + log_risk_sc|elkuid), 
                                   data=elk2, family=binomial, weights = w, 
-                                  map=list(theta=factor(c(NA, 1:3))),
-                                  start=list(theta=c(log(1e3), rep(0,3))))
+                                  map=list(theta=factor(c(NA, 1:3))), # three random effects
+                                  start=list(theta=c(log(1e3), rep(0,3)))) # 
 )
             
 summary(forage_risk_slopes_both)
 sjPlot::plot_model(forage_risk_slopes_both, transform=NULL)
+# this just shows fixed effects variance - for random effects variance you have to use boot.mer
 ```
 
 Both forage terms are still highly significant. 
@@ -211,6 +234,8 @@ as_tibble(rownames_to_column(coef(forage_risk_slopes_both)$cond$elkuid, "elkuid"
 
 If we plot these, we'll notice that the coefficients for the first-order term of forage, `totalherb_sc`, are normally-ish distributed and centered around the fixed effect, which is about 2.6. Obviously, you need both the first- and second-order (squared term) coefficients for forage to understand the response, but for simplicity in this example, I'll just use the first-order term.
 ```{r}
+# distribution of individual coefficients from first part of quadratic with the marginal plotted on it 
+# this is fitting the inhomogenous points process model correctly with logistic regression 
 as_tibble(rownames_to_column(coef(forage_risk_slopes_both)$cond$elkuid, "elkuid")) %>% 
   dplyr::select(totalherb_sc) %>% 
   ggplot(., aes(x=totalherb_sc)) +
@@ -228,13 +253,16 @@ broom.mixed::tidy(forage_risk_slopes_both, effects = "ran_vals")
 Below I create a data frame with the random coefficient values and confidence intervals for the first-order term of forage, `totalherb_sc` that incorporate standard errors based on only random coefficients. Again, these don't incorporate the uncertainty around the fixed effect estimate for `totalherb_sc`, so they are likely too narrow.
 ```{r ran_coefs_using_tidy}
 forage_ran_coefs <- broom.mixed::tidy(forage_risk_slopes_both, effects = "ran_vals") %>%
-  filter(term=="totalherb_sc") %>% 
+  filter(term=="totalherb_sc") %>%  # get for just the first coefficient
   dplyr::select(elkuid=level, estimate, std.error) %>% 
   mutate(forage_coef = estimate + fixef(forage_risk_slopes_both)$cond["totalherb_sc"],
          conf_low = forage_coef - std.error*1.96,
          conf_high = forage_coef + std.error*1.96) 
 
 forage_ran_coefs
+#0:38:30 in the lab recording
+# fixed effect + ranef = confidence interval
+## this is still just with the fixed effects variance 
 ```
 
 And a plot:
@@ -247,6 +275,7 @@ ggplot(forage_ran_coefs, aes(x=elkuid, y=forage_coef)) +
                     size=1) +
     xlab("Elk ID") +
     theme_bw(base_size = 15)
+ 
 ```
 
 Elk 2 and 196 are a bit gnarly. What'd be nice to see some confirmation that our random coefficients align with the fixed-effects coefficient for forage. Below we can see how our fixed effects confidence intervals on their own, even in a random slopes model where they are much wider than in a model without random slopes, don't do a great job of showing the full spread of the responses.
@@ -267,7 +296,10 @@ ggplot(
                       ymax = conf_high),
                   size=1) +
   xlab("Elk ID") +
-  theme_bw(base_size = 15)
+  theme_bw
+
+# this shows you the population mean and how individuals vary around it 
+# useful for diagnosing whether you believe conditional vs marginal 
 ```
   
 # Fixed-effects predictions
@@ -282,24 +314,26 @@ system.time(forage_risk_slopes_both_UNFIXED <- glmmTMB(used ~ totalherb_sc + tot
                                      (0 + log_risk_sc|elkuid), 
                                   data=elk2, family=binomial, weights = w)
 )
+# no variance, just weights 
 ```
 
 Let's say you want to predict the relative probability of selection across the entire range of forage biomass values that elk enounter. To get fixed effects (population-level) predictions, just create a new data frame from which to predict, but fill all your grouping variables (in our case, `elkuid`) with `NA`. Create a sequence of unscaled forage biomass values from the minimum to maximum values (pooled across all animals), then scale those values. Since you are trying to isolate the effect of forage biomass on selection, set scaled prediction risk to 0, and provide any value (including NA) for `w`. Note that you do *not* need to go back and fit a separate model with unscaled covariates. You've include both scaled and unscaled versions of forage values in the new data. We'll use the scaled values for the predictions and the unscaled values for plotting the response.
 ```{r create_df_for_fixed_preds}
 forage_for_predict_population <-
-  tibble(elkuid = NA,
+  tibble(elkuid = NA, # we're not making conditional predictions - not predicting for any individ elk
          totalherb = seq(min(elk2$totalherb), max(elk2$totalherb), len=100),
          totalherb2 = totalherb^2,
          totalherb_sc = as.numeric(scale(totalherb)),
          totalherb2_sc = as.numeric(scale(totalherb2)),
-         log_risk_sc = 0,
-         w = NA) 
+         log_risk_sc = 0, # set predation risk equal to zero
+         w = NA) # ignore weighting
 
 forage_for_predict_population
 ```
 
 Then in the `predict` call, just specifiy `re.form=NA`, which means ignore all random effects. By default, this `predict` produces predictions on the scale of the linear predictor. The reason we do this, and not immediately go back to the real scale, is that we want to subtract the intercept (which is on the linear predictor scale), so it's not included in the predictions. After we've subtracted the intercept, we can exponentiate to get back to the real scale.
 ```{r make_fixed_preds}
+# predict into the dataframe we just created (forage_for_predict_pop)
 pop_pred_unfixed <-
   forage_for_predict_population %>% 
   mutate(pred_LP = predict(forage_risk_slopes_both_UNFIXED, ., re.form=NA),
@@ -316,6 +350,7 @@ pop_pred_unfixed %>%
 pop_pred_unfixed %>% 
   filter(pred_real == max(pred_real)) %>% 
   select(totalherb)
+# we get this by finding the max of the quadratie - the derivative 
 ```
 
 Selection is highest at a biomass of 95.0. Notice that the y-axis values don't look like probabilities, because they aren't. Because we're using an exponential model, these are "relative" probabilities, and the magnitudes are essentially meaningless. 
@@ -376,10 +411,11 @@ Again, selection is highest at 95.0!
 
 There is an option to add standard errors in the `predict` function, but I couldn't figure out how to get it to ignore the random intercept when calculating these standard errors, which we use to create confidence intervals. So, I modified a function that I found on Ben Bolker's [blog](https://bbolker.github.io/mixedmodels-misc/glmmFAQ.html#glmmtmb) so that it calculates standard errors and 95% confidence intervals but ignores the fixed and random intercepts. The function adds columns for the prediction and confidence intervals straight to the input data frame.
 ```{r custom_predict_CI_function_for_fixed}
+# make a function to do this
 pred_CI <- function(model, newdata=NULL, alpha=0.05) {
   pred0 <- predict(model, re.form=NA, newdata=newdata) - fixef(model)$cond["(Intercept)"]
   X <- model.matrix(formula(model, fixed.only=TRUE)[-2], newdata)[,-1]
-  V <- vcov(model)$cond[-1,-1]     
+  V <- vcov(model)$cond[-1,-1]     # get rid of the random effects 
   pred_se <- sqrt(diag(X %*% V %*% t(X))) 
   crit <- -qnorm(alpha/2)
   pred_df <- as_tibble(exp(cbind(pred=pred0, conf.low=pred0-crit*pred_se,
@@ -393,12 +429,13 @@ pred_CI(forage_risk_slopes_both_UNFIXED, forage_for_predict_population) %>%
   ggplot(., aes(x=totalherb, y=pred)) +
   geom_ribbon(aes(ymin=conf.low, ymax=conf.high), fill="lightgray") +
   geom_line(size=1) + 
-  theme_classic(base_size=15) 
+  theme_classic(base_size=15)
+# 95 CI from fixed effects on model ignoring random intercept variance  and ignoring the random coefficient variance 
 ```
 
 VERY wide confidence intervals here, which is sometimes the case for mixed-effects models that properly account for individual variation in responses. This is largely driven by four individuals. Two with very low random coefficients for forage, and two with very low coefficients for forage^2^. 
 
-# Individual-level predictions
+# Individual-level predictions 0:59:20 in recording
 
 Just as with the fixed effects predictions, you need all the same columns that are in the model formula, including the `w` column. To do this, find the min and max of available `totalherb` values that each elk encounters. Here we take the `elkuid` and `totalherb` columns from the `elk2` data frame, then nest by `totalherb`. This creates a list-column where the forage values for each elk are in their own separate tibble. We then map a function that for each elk, calculates a sequence of 100 values between the min and max of `totalherb`  Then unnest the data and add in the remaining columns that we used in the model.
 ```{r create_ind_df_for_predict}
@@ -452,6 +489,7 @@ for_predict_ind %>%
   geom_line(size=1) +
   theme_classic(base_size=15) +
   coord_cartesian(xlim= c(0,200), ylim=c(0,10))
+# some lines don't go all the way bc the elk never went to areas with certain forage quality
 ```
 
 Wow! Again we are struck by the magnitude of the variation.  What a cluster. To see if this makes sense, we can quickly use our `pred_CI` function to predict fixed effects response and then plop it on top of this.
@@ -466,6 +504,7 @@ for_predict_ind %>%
     geom_line(data = fixed_response, size = 2, color="black") + 
     theme_classic(base_size=15) +
     coord_cartesian(xlim= c(0,200), ylim=c(0,10))
+# this shows the pop average and the 95% confidence intervals 
 ```
 
 Okay, it does seem to make sense. Not the best example, but it does show a LOT of individual variation!
@@ -480,6 +519,7 @@ for_predict_ind %>%
     geom_line(data = fixed_response, size = 2, color="black") + 
     theme_classic(base_size=15) +
     coord_cartesian(xlim= c(0,200), ylim=c(0,10))
+# on the y axis here is a probability of selection 
 ```
 
 It's hard to see which is correct here, but basically, because the `predict` function still (somehow) accounts for the random intercept variance, we should steer clear of using it when we screw with the random intercept variance. 
@@ -490,7 +530,7 @@ In this model, some of the random coefficients for forage are a bit wild, which 
 
 # Plotting Predicted Probability of USE 
 
-Following Avgar et al. 2017, we will now calculate the probability of use for just the available study area samples, which takes the probabilities of selection, but just for the availability distribution, which ends up equalling the probability of use.  Read:
+Following Avgar et al. 2017, we will now calculate the probability of use for just the available (study area) samples, which takes the probabilities of selection, but just for the availability distribution, which ends up equalling the probability of use.  Read:
 
 Avgar, T., S. R. Lele, J. L. Keim, and M. S. Boyce. 2017. Relative Selection Strength: Quantifying effect size in habitat- and step-selection inference. Ecol Evol 7:5322-5330.10.1002/ece3.3122
 
@@ -514,6 +554,8 @@ elk2 %>%
   ggplot(., aes(x = totalherb, y = predict)) +
   geom_smooth(alpha=0.2, size=1.6) +
   theme_classic(base_size=20)
+# this gives the predicted probability of use for just the zeros
+# above was the predicted probability of selection (for the 1s and 0s)
 ```
 
 
